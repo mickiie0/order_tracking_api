@@ -1,0 +1,862 @@
+{
+	"info": {
+		"_postman_id": "a918e9a2-97be-4b68-98e2-b06297ce27b0",
+		"name": "Order Tracking & Issue Management API",
+		"description": "Postman Collection ครอบคลุม Core Endpoints และ Mock Scenarios ทั้ง 5 ปัญหา (Bot Crash/Lease, Race Condition/Double Payment, Webhook Idempotency/Out-of-order, Transient vs Permanent, QR Expiry/SLA)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "userId",
+			"value": "user-001",
+			"type": "string"
+		},
+		{
+			"key": "currentOrderNo",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "webhookSignature",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "webhookBody",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "claimedOrderNo",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "System Health",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/healthz",
+							"host": ["{{baseUrl}}"],
+							"path": ["healthz"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "1. Core Order Endpoints",
+			"item": [
+				{
+					"name": "Create Order (Success 201)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201 || pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.order_no) {",
+									"        pm.collectionVariables.set('currentOrderNo', jsonData.order_no);",
+									"        console.log('Saved currentOrderNo:', jsonData.order_no);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "pm-key-{{$timestamp}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"user_id\": \"{{userId}}\",\n    \"game_uid\": \"555666777\",\n    \"amount\": 120\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"]
+						}
+					}
+				},
+				{
+					"name": "Create Order (Duplicate Key -> 200 Idempotent Replayed)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "fixed-idempotency-key-001"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"user_id\": \"{{userId}}\",\n    \"game_uid\": \"555666777\",\n    \"amount\": 120\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"]
+						}
+					}
+				},
+				{
+					"name": "Create Order (Same Key, Different Payload -> 422)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "fixed-idempotency-key-001"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"user_id\": \"{{userId}}\",\n    \"game_uid\": \"different-uid-999\",\n    \"amount\": 999\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"]
+						}
+					}
+				},
+				{
+					"name": "Create Order (Missing Idempotency-Key -> 400)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"user_id\": \"{{userId}}\",\n    \"game_uid\": \"12345\",\n    \"amount\": 100\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"]
+						}
+					}
+				},
+				{
+					"name": "Get Order By OrderNo",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/{{currentOrderNo}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "{{currentOrderNo}}"]
+						}
+					}
+				},
+				{
+					"name": "Get Order (Invalid Format -> 400)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/INVALID-FORMAT-123",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "INVALID-FORMAT-123"]
+						}
+					}
+				},
+				{
+					"name": "Get Order (Not Found -> 404)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20990101-999999",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20990101-999999"]
+						}
+					}
+				},
+				{
+					"name": "List Orders (Tab: Current)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders?tab=current&page=1&limit=10&user_id={{userId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"],
+							"query": [
+								{ "key": "tab", "value": "current" },
+								{ "key": "page", "value": "1" },
+								{ "key": "limit", "value": "10" },
+								{ "key": "user_id", "value": "{{userId}}" }
+							]
+						}
+					}
+				},
+				{
+					"name": "List Orders (Tab: History)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders?tab=history&page=1&limit=10&user_id={{userId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders"],
+							"query": [
+								{ "key": "tab", "value": "history" },
+								{ "key": "page", "value": "1" },
+								{ "key": "limit", "value": "10" },
+								{ "key": "user_id", "value": "{{userId}}" }
+							]
+						}
+					}
+				},
+				{
+					"name": "Get Order Timeline",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/{{currentOrderNo}}/timeline",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "{{currentOrderNo}}", "timeline"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Scenario 1 - Bot Crash & Lease Stale",
+			"description": "ทดสอบเมื่อ Bot ออฟไลน์หรือค้างขณะประมวลผล (Lease เกินกำหนด -> Scheduler Reclaim กลับมาคิว)",
+			"item": [
+				{
+					"name": "Check Stale Order (Seed ORD-20260101-900004)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900004",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900004"]
+						}
+					}
+				},
+				{
+					"name": "Trigger Maintenance (Reap Stale Leases)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/admin/maintenance/run",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "maintenance", "run"]
+						}
+					}
+				},
+				{
+					"name": "Dead Bot Heartbeat After Reaped -> 409 LEASE_LOST",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"bot-dead\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/orders/ORD-20260101-900004/heartbeat",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "orders", "ORD-20260101-900004", "heartbeat"]
+						}
+					}
+				},
+				{
+					"name": "View Timeline of Reclaimed Order",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900004/timeline",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900004", "timeline"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Scenario 2 - Bot Racing & Double Payment Protection",
+			"description": "ทดสอบ Atomic Locking (SKIP LOCKED) และ Double Payment Prevention",
+			"item": [
+				{
+					"name": "Bot A Claim Next Order",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    if (jsonData.order_no) {",
+									"        pm.collectionVariables.set('claimedOrderNo', jsonData.order_no);",
+									"        console.log('Claimed Order:', jsonData.order_no);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-A\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/claim",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "claim"]
+						}
+					}
+				},
+				{
+					"name": "Bot B Claim Concurrent (Gets Different Order or 204)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-B\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/claim",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "claim"]
+						}
+					}
+				},
+				{
+					"name": "Bot A Send Heartbeat",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-A\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/orders/{{claimedOrderNo}}/heartbeat",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "orders", "{{claimedOrderNo}}", "heartbeat"]
+						}
+					}
+				},
+				{
+					"name": "Rogue Bot B Tries to Complete Bot A's Order -> 409 LEASE_LOST",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-B\",\n    \"provider_ref\":\"ROGUE-REF-001\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/orders/{{claimedOrderNo}}/complete",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "orders", "{{claimedOrderNo}}", "complete"]
+						}
+					}
+				},
+				{
+					"name": "Bot A Completes Order Successfully -> 200",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-A\",\n    \"provider_ref\": \"TOPUP-SUCCESS-001\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/orders/{{claimedOrderNo}}/complete",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "orders", "{{claimedOrderNo}}", "complete"]
+						}
+					}
+				},
+				{
+					"name": "Duplicate Complete on Same Order -> 409 Conflict",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"bot_id\": \"manual-bot-A\",\n    \"provider_ref\": \"TOPUP-SUCCESS-002\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bot/orders/{{claimedOrderNo}}/complete",
+							"host": ["{{baseUrl}}"],
+							"path": ["bot", "orders", "{{claimedOrderNo}}", "complete"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Scenario 3 - Bank Webhooks (Idempotency & Out-of-order)",
+			"description": "ทดสอบ Webhook Verification, Deduplication, สลับลำดับ, และ Late Webhook บน Expired Order",
+			"item": [
+				{
+					"name": "Step 1: Sign Payment Webhook (Dev Helper)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('webhookSignature', jsonData.signature);",
+									"    pm.collectionVariables.set('webhookBody', jsonData.body);",
+									"    console.log('Generated Signature:', jsonData.signature);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"event_id\": \"evt-postman-{{$timestamp}}\",\n    \"order_no\": \"{{currentOrderNo}}\",\n    \"type\": \"payment.succeeded\",\n    \"amount\": 120\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/dev/webhooks/sign",
+							"host": ["{{baseUrl}}"],
+							"path": ["dev", "webhooks", "sign"]
+						}
+					}
+				},
+				{
+					"name": "Step 2: Deliver Valid Payment Webhook -> QUEUED",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Signature",
+								"value": "{{webhookSignature}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{{webhookBody}}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/webhooks/payment",
+							"host": ["{{baseUrl}}"],
+							"path": ["webhooks", "payment"]
+						}
+					}
+				},
+				{
+					"name": "Step 3: Deliver Duplicate Webhook -> DUPLICATE_IGNORED",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Signature",
+								"value": "{{webhookSignature}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{{webhookBody}}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/webhooks/payment",
+							"host": ["{{baseUrl}}"],
+							"path": ["webhooks", "payment"]
+						}
+					}
+				},
+				{
+					"name": "Step 4: Invalid Signature -> 401 INVALID_SIGNATURE",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Signature",
+								"value": "deadbeef-forged-signature"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"event_id\": \"evt-fake\",\n    \"order_no\": \"{{currentOrderNo}}\",\n    \"type\": \"payment.succeeded\",\n    \"amount\": 120\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/webhooks/payment",
+							"host": ["{{baseUrl}}"],
+							"path": ["webhooks", "payment"]
+						}
+					}
+				},
+				{
+					"name": "Step 5: Sign Late Webhook for Expired Order (Seed 900008)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('lateSignature', jsonData.signature);",
+									"    pm.collectionVariables.set('lateBody', jsonData.body);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"event_id\": \"evt-late-900008-{{$timestamp}}\",\n    \"order_no\": \"ORD-20260101-900008\",\n    \"type\": \"payment.succeeded\",\n    \"amount\": 450\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/dev/webhooks/sign",
+							"host": ["{{baseUrl}}"],
+							"path": ["dev", "webhooks", "sign"]
+						}
+					}
+				},
+				{
+					"name": "Step 6: Deliver Late Webhook -> AUTO_REFUNDED",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-Signature",
+								"value": "{{lateSignature}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{{lateBody}}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/webhooks/payment",
+							"host": ["{{baseUrl}}"],
+							"path": ["webhooks", "payment"]
+						}
+					}
+				},
+				{
+					"name": "Step 7: Check Timeline of Auto-Refunded Order",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900008/timeline",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900008", "timeline"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Scenario 4 - Top-Up Failure & Resolve",
+			"description": "ทดสอบ Transient Error (Retry w/ Backoff) vs Permanent Error (Failed) และการ Resolve โดยลูกค้า",
+			"item": [
+				{
+					"name": "Customer Fixes Game UID on FAILED Order (Seed 900006)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "{{userId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": \"RETRY\",\n    \"game_uid\": \"correct-uid-88888\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900006/resolve",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900006", "resolve"]
+						}
+					}
+				},
+				{
+					"name": "Customer Requests Refund on DELAYED Order (Seed 900007)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "{{userId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": \"REFUND\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900007/resolve",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900007", "resolve"]
+						}
+					}
+				},
+				{
+					"name": "Resolve Forbidden (Wrong User -> 403)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "hacker-user"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": \"REFUND\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900006/resolve",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900006", "resolve"]
+						}
+					}
+				},
+				{
+					"name": "Resolve Completed Order -> 409 ORDER_NOT_RESOLVABLE",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "{{userId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": \"REFUND\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900005/resolve",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900005", "resolve"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Scenario 5 - QR Expiry, SLA & Report Issue",
+			"description": "ทดสอบ Cron ย้ายสถานะ PENDING_PAYMENT -> EXPIRED, SLA Alert และ Report Issue Escalation",
+			"item": [
+				{
+					"name": "Trigger Maintenance (Expire QR & SLA Alerts)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/admin/maintenance/run",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "maintenance", "run"]
+						}
+					}
+				},
+				{
+					"name": "Check Expired Order (Seed 900002 -> EXPIRED)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900002",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900002"]
+						}
+					}
+				},
+				{
+					"name": "Customer Report Issue on Stuck Order (Seed 900010 -> DELAYED)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "{{userId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"reason\": \"ยังไม่ได้รับไอเทมในเกม\",\n    \"description\": \"โอนเงินไป 30 นาทีแล้วไอเทมยังไม่เข้า\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900010/report-issue",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900010", "report-issue"]
+						}
+					}
+				},
+				{
+					"name": "Customer Report Issue on Completed Order (Only Notes Timeline)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-User-ID",
+								"value": "{{userId}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"reason\": \"ไอเทมไม่ครบ\",\n    \"description\": \"ได้เพชรไม่ครบตามจำนวนแพ็กเกจ\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900005/report-issue",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900005", "report-issue"]
+						}
+					}
+				},
+				{
+					"name": "Check Timeline of Escalated Order (Seed 900010)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/orders/ORD-20260101-900010/timeline",
+							"host": ["{{baseUrl}}"],
+							"path": ["orders", "ORD-20260101-900010", "timeline"]
+						}
+					}
+				}
+			]
+		}
+	]
+}

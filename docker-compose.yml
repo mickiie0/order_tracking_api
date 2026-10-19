@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orders
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://postgres:postgres@db:5432/orders?sslmode=disable
+      WEBHOOK_SECRET: dev-webhook-secret
+      SEED_DATA: "true"
+      DEV_ENDPOINTS: "true"   # exposes /dev/webhooks/sign - disable in production
+      PAYMENT_TTL: 15m
+      LEASE_TIMEOUT: 3m
+      QUEUE_SLA: 10m
+      REPORT_DELAY_AFTER: 5m
+      BACKOFF_BASE: 30s
+      MAX_RETRIES: "3"
+      SCHEDULER_INTERVAL: 15s
+      BOT_WORKERS: "2"
+      BOT_POLL_INTERVAL: 3s
+      BOT_HEARTBEAT_INTERVAL: 30s
+      PROVIDER_LATENCY: 500ms
+    restart: unless-stopped
+
+  # docker compose --profile test run --rm test
+  test:
+    image: golang:1.22
+    profiles: ["test"]
+    depends_on:
+      db:
+        condition: service_healthy
+    working_dir: /src
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+    environment:
+      TEST_DATABASE_URL: postgres://postgres:postgres@db:5432/orders_test?sslmode=disable
+    command: sh -c "go mod tidy && go test -count=1 -v ./..."
+
+volumes:
+  pgdata:
+  gomod:

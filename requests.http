@@ -1,0 +1,297 @@
+### Order Tracking API - VS Code "REST Client" / JetBrains HTTP Client
+### Seeded order numbers (user-001):
+###   900001 PENDING | 900002 PENDING (already past expiry) | 900003 QUEUED
+###   900004 IN_PROGRESS stale lease (HANG uid) | 900005 COMPLETED | 900006 FAILED (INVALID uid)
+###   900007 DELAYED | 900008 EXPIRED | 900009 REFUNDED | 900010 QUEUED 30 min (stuck)
+
+@base = http://localhost:8080
+@user = user-001
+
+### Health
+GET {{base}}/healthz
+
+##############################################################################
+### 1) CORE ENDPOINTS
+##############################################################################
+
+### Create order (201). Re-send with the same key -> 200 + Idempotent-Replayed: true
+# @name createOrder
+POST {{base}}/orders
+Content-Type: application/json
+Idempotency-Key: demo-key-001
+
+{"user_id":"{{user}}","game_uid":"555666777","amount":120}
+
+### Same key + different payload -> 422 IDEMPOTENCY_KEY_REUSED
+POST {{base}}/orders
+Content-Type: application/json
+Idempotency-Key: demo-key-001
+
+{"user_id":"{{user}}","game_uid":"000000000","amount":999}
+
+### Missing Idempotency-Key -> 400 IDEMPOTENCY_KEY_REQUIRED
+POST {{base}}/orders
+Content-Type: application/json
+
+{"user_id":"{{user}}","game_uid":"1","amount":10}
+
+### Validation error -> 400 VALIDATION_ERROR (details per field)
+POST {{base}}/orders
+Content-Type: application/json
+Idempotency-Key: demo-bad-001
+
+{"user_id":"","game_uid":"","amount":-5}
+
+### Get order
+GET {{base}}/orders/{{createOrder.response.body.$.order_no}}
+
+### Get order - bad format -> 400 INVALID_ORDER_NO
+GET {{base}}/orders/ORDER-123
+
+### Get order - not found -> 404 ORDER_NOT_FOUND
+GET {{base}}/orders/ORD-20990101-123456
+
+### List current tab
+GET {{base}}/orders?tab=current&page=1&limit=10&user_id={{user}}
+
+### List history tab
+GET {{base}}/orders?tab=history&page=1&limit=10&user_id={{user}}
+
+### List - invalid tab -> 400
+GET {{base}}/orders?tab=foo
+
+### Timeline
+GET {{base}}/orders/{{createOrder.response.body.$.order_no}}/timeline
+
+##############################################################################
+### SCENARIO 3 - Bank webhook: signature / duplicate / late / out-of-order
+### (POST /dev/webhooks/sign is a DEV-ONLY helper returning {body, signature})
+##############################################################################
+
+### 3.1 Sign a payment.succeeded event for the order created above
+# @name signPay
+POST {{base}}/dev/webhooks/sign
+Content-Type: application/json
+
+{"event_id":"evt-demo-001","order_no":"{{createOrder.response.body.$.order_no}}","type":"payment.succeeded","amount":120}
+
+### 3.2 Deliver webhook -> result QUEUED
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: {{signPay.response.body.$.signature}}
+
+{{signPay.response.body.$.body}}
+
+### 3.3 Deliver the SAME event again (bank retry) -> DUPLICATE_IGNORED
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: {{signPay.response.body.$.signature}}
+
+{{signPay.response.body.$.body}}
+
+### 3.4 Wrong signature -> 401 INVALID_SIGNATURE
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: 0000deadbeef
+
+{"event_id":"evt-forged","order_no":"ORD-20260101-900001","type":"payment.succeeded","amount":100}
+
+### 3.5 Out-of-order: payment.failed arriving after success -> NOTED, status unchanged
+# @name signFail
+POST {{base}}/dev/webhooks/sign
+Content-Type: application/json
+
+{"event_id":"evt-demo-002","order_no":"{{createOrder.response.body.$.order_no}}","type":"payment.failed","amount":120}
+
+###
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: {{signFail.response.body.$.signature}}
+
+{{signFail.response.body.$.body}}
+
+### 3.6 LATE webhook on EXPIRED order (seed 900008) -> AUTO_REFUNDED (not COMPLETED)
+# @name signLate
+POST {{base}}/dev/webhooks/sign
+Content-Type: application/json
+
+{"event_id":"evt-late-900008","order_no":"ORD-20260101-900008","type":"payment.succeeded","amount":450}
+
+###
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: {{signLate.response.body.$.signature}}
+
+{{signLate.response.body.$.body}}
+
+###
+GET {{base}}/orders/ORD-20260101-900008/timeline
+
+### 3.7 Amount mismatch -> AMOUNT_MISMATCH (alert, status unchanged)
+# @name signAmt
+POST {{base}}/dev/webhooks/sign
+Content-Type: application/json
+
+{"event_id":"evt-amt-900001","order_no":"ORD-20260101-900001","type":"payment.succeeded","amount":1}
+
+###
+POST {{base}}/webhooks/payment
+Content-Type: application/json
+X-Signature: {{signAmt.response.body.$.signature}}
+
+{{signAmt.response.body.$.body}}
+
+##############################################################################
+### SCENARIO 2 - Bots racing (run claim twice quickly with two bot IDs;
+### each receives a DIFFERENT order or 204 - never the same one)
+### Tip: set BOT_WORKERS=0 in docker-compose to drive bots manually.
+##############################################################################
+
+### Bot A claims
+# @name claimA
+POST {{base}}/bot/claim
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A"}
+
+### Bot B claims (gets another order / 204)
+POST {{base}}/bot/claim
+Content-Type: application/json
+
+{"bot_id":"manual-bot-B"}
+
+### Heartbeat (extends lease)
+POST {{base}}/bot/orders/{{claimA.response.body.$.order_no}}/heartbeat
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A"}
+
+### Bot B tries to complete A's order -> 409 LEASE_LOST
+POST {{base}}/bot/orders/{{claimA.response.body.$.order_no}}/complete
+Content-Type: application/json
+
+{"bot_id":"manual-bot-B","provider_ref":"ROGUE-1"}
+
+### Bot A completes -> COMPLETED
+POST {{base}}/bot/orders/{{claimA.response.body.$.order_no}}/complete
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A","provider_ref":"TOPUP-REF-1"}
+
+### Bot A completes AGAIN -> 409 (no second payment row)
+POST {{base}}/bot/orders/{{claimA.response.body.$.order_no}}/complete
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A","provider_ref":"TOPUP-REF-2"}
+
+##############################################################################
+### SCENARIO 4 - Top-up failure: transient vs permanent
+##############################################################################
+
+### 4.1 Transient (provider down) -> back to QUEUED with backoff, retry_count+1
+# @name claimT
+POST {{base}}/bot/claim
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A"}
+
+###
+POST {{base}}/bot/orders/{{claimT.response.body.$.order_no}}/fail
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A","error_code":"PROVIDER_UNAVAILABLE","message":"503 from provider"}
+
+### 4.2 Permanent (invalid UID) -> FAILED immediately
+# @name claimP
+POST {{base}}/bot/claim
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A"}
+
+###
+POST {{base}}/bot/orders/{{claimP.response.body.$.order_no}}/fail
+Content-Type: application/json
+
+{"bot_id":"manual-bot-A","error_code":"INVALID_UID","message":"uid not found"}
+
+### 4.3 Customer fixes the UID on FAILED seed order 900006 -> QUEUED (bots will complete it)
+PATCH {{base}}/orders/ORD-20260101-900006/resolve
+Content-Type: application/json
+X-User-ID: {{user}}
+
+{"action":"RETRY","game_uid":"600600600"}
+
+### 4.4 Customer requests refund on DELAYED seed order 900007 -> REFUNDED
+PATCH {{base}}/orders/ORD-20260101-900007/resolve
+Content-Type: application/json
+X-User-ID: {{user}}
+
+{"action":"REFUND"}
+
+### 4.5 Resolve a COMPLETED order -> 409 ORDER_NOT_RESOLVABLE
+PATCH {{base}}/orders/ORD-20260101-900005/resolve
+Content-Type: application/json
+X-User-ID: {{user}}
+
+{"action":"REFUND"}
+
+### 4.6 Resolve someone else's order -> 403 FORBIDDEN
+PATCH {{base}}/orders/ORD-20260101-900006/resolve
+Content-Type: application/json
+X-User-ID: hacker
+
+{"action":"REFUND"}
+
+### 4.7 End-to-end with built-in bots: UID prefix drives the mock provider
+###     INVALID* -> FAILED, DOWN* -> retries then DELAYED, FLAKY* -> random, HANG* -> bot crash
+# @name createInvalid
+POST {{base}}/orders
+Content-Type: application/json
+Idempotency-Key: demo-invalid-001
+
+{"user_id":"{{user}}","game_uid":"INVALID-42","amount":50}
+
+##############################################################################
+### SCENARIO 1 - Bot crashed / stale lease
+### Seed 900004 is IN_PROGRESS by "bot-dead" with a 10-minute-old lease.
+##############################################################################
+
+### Trigger the scheduler tick now (normally every SCHEDULER_INTERVAL)
+POST {{base}}/admin/maintenance/run
+
+### 900004 is back to QUEUED with retry_count=1 (HANG uid -> crashes again -> eventually DELAYED)
+GET {{base}}/orders/ORD-20260101-900004/timeline
+
+### The dead bot wakes up and heartbeats -> 409 LEASE_LOST
+POST {{base}}/bot/orders/ORD-20260101-900004/heartbeat
+Content-Type: application/json
+
+{"bot_id":"bot-dead"}
+
+##############################################################################
+### SCENARIO 5 - QR expiry / stuck orders / customer report
+##############################################################################
+
+### Seed 900002 is PENDING past expiry -> run maintenance -> EXPIRED.
+### Seed 900010 queued 30 min -> "ALERT order queued beyond SLA" in logs.
+POST {{base}}/admin/maintenance/run
+
+###
+GET {{base}}/orders/ORD-20260101-900002
+
+### Customer reports issue on the stuck order 900010 -> escalated to DELAYED (if still QUEUED)
+POST {{base}}/orders/ORD-20260101-900010/report-issue
+Content-Type: application/json
+X-User-ID: {{user}}
+
+{"reason":"ยังไม่ได้รับไอเทม","description":"จ่ายไปนานแล้ว"}
+
+### Report on a completed order -> recorded on timeline, no status change
+POST {{base}}/orders/ORD-20260101-900005/report-issue
+Content-Type: application/json
+X-User-ID: {{user}}
+
+{"reason":"ไอเทมไม่เข้า"}
+
+###
+GET {{base}}/orders/ORD-20260101-900010/timeline

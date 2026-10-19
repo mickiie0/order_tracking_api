@@ -1,0 +1,4 @@
+.git
+*.md
+requests.http
+postman_collection.json
